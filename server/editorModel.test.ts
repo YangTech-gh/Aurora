@@ -14,6 +14,8 @@ import {
   getNodeStyle,
   gsapContextSnippet,
   projectFromImportedFiles,
+  updateImportedFileContent,
+  bundleProjectForLiveDev,
   reconstructImportedNodes,
   nextMediaPlayingState,
   seekMediaElement,
@@ -39,6 +41,26 @@ describe("editor model", () => {
     expect(imported.origin).toBe("folder");
     expect(imported.detectedFramework).toBe("svelte");
     expect(imported.importedFiles?.[0]?.path).toBe("src/App.svelte");
+  });
+
+  it("updates imported file content and re-detects framework and nodes", () => {
+    const project = projectFromImportedFiles([{ path: "index.html", content: "<h1>Old</h1>", size: 20, kind: "source" }], "folder");
+    const updated = updateImportedFileContent(project, "index.html", "<h1>New Edited Content</h1>");
+    expect(updated.importedFiles?.[0]?.content).toBe("<h1>New Edited Content</h1>");
+    expect(updated.nodes[0]?.children?.some((node) => node.content.includes("New Edited Content"))).toBe(true);
+  });
+
+  it("bundles imported React, Vue and HTML projects for live dev mounting", () => {
+    const reactProject = projectFromImportedFiles([{ path: "src/App.tsx", content: "function App() { return <h1>React App Live</h1>; }", size: 60, kind: "source" }], "folder");
+    const reactBundle = bundleProjectForLiveDev(reactProject);
+    expect(reactBundle).toContain("@babel/standalone");
+    expect(reactBundle).toContain("ReactDOM.createRoot");
+    expect(reactBundle).toContain("React App Live");
+
+    const vueProject = projectFromImportedFiles([{ path: "src/App.vue", content: "<template><div>Vue Live</div></template>", size: 50, kind: "source" }], "folder");
+    const vueBundle = bundleProjectForLiveDev(vueProject);
+    expect(vueBundle).toContain("vue.global.js");
+    expect(vueBundle).toContain("Vue Live");
   });
 
   it("exposes advanced building blocks in the library", () => {

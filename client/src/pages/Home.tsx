@@ -66,6 +66,8 @@ import {
   updateNodeTree,
   updateBreakpointConfig,
   projectFromImportedFiles,
+  updateImportedFileContent,
+  bundleProjectForLiveDev,
   gsapContextSnippet,
   migrateProject,
   clampMediaTime,
@@ -76,7 +78,7 @@ import {
 import type { Breakpoint, ComponentKind, EditorNode, EditorProject, NodeStyle } from "@/lib/editorModel";
 import { trpc } from "@/lib/trpc";
 
-type RailKey = "library" | "layers" | "assets" | "settings";
+type RailKey = "library" | "layers" | "assets" | "files" | "settings";
 type InspectorTab = "design" | "motion";
 type CodeTab = "html" | "css" | "vue" | "react" | "svelte" | "gsap";
 
@@ -88,6 +90,7 @@ const railItems: Array<{ key: RailKey; label: string; icon: typeof LayoutTemplat
   { key: "library", label: "Library", icon: LayoutTemplate },
   { key: "layers", label: "Layers", icon: Layers3 },
   { key: "assets", label: "Assets", icon: ImageIcon },
+  { key: "files", label: "Files", icon: FolderOpen },
   { key: "settings", label: "Settings", icon: Settings2 },
 ];
 
@@ -249,6 +252,9 @@ export default function Home() {
   const [videoTimes, setVideoTimes] = useState<Record<string, number>>({});
   const [mediaPlaying, setMediaPlaying] = useState<Record<string, boolean>>({});
   const [uploadingAsset, setUploadingAsset] = useState(false);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<string>("");
+  const [liveDevMode, setLiveDevMode] = useState<boolean>(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const assetInputRef = useRef<HTMLInputElement>(null);
@@ -477,6 +483,19 @@ export default function Home() {
     void toggleMediaPlayback(media).then((playing) => {
       setMediaPlaying((current) => nextMediaPlayingState(current, id, playing));
     }).catch(() => toast.error("Playback could not start for this asset"));
+  }
+
+  function selectFileToEdit(path: string) {
+    setActiveFilePath(path);
+    const file = project.importedFiles?.find((f) => f.path === path);
+    setFileContent(file?.content || "");
+  }
+
+  function handleSaveFileContent() {
+    if (!activeFilePath) return;
+    const nextProject = updateImportedFileContent(project, activeFilePath, fileContent);
+    setProjectWithHistory(nextProject);
+    toast.success(`Updated ${activeFilePath.split("/").pop()} & synced to canvas`);
   }
 
   function assignAssetToSelected(assetUrl: string) {
@@ -778,6 +797,33 @@ export default function Home() {
               <div className="category-label">Starter assets <span>3</span></div>
               <div className="asset-grid"><div className="asset-tile tile-orbit"><div className="mini-orbit" /></div><div className="asset-tile tile-gradient" /><div className="asset-tile tile-noise" /></div>
             </>}
+            {activeRail === "files" && <>
+              <div className="panel-heading"><div><p className="eyebrow-small">SOURCE REPO</p><h2>File Explorer</h2></div><button className="mini-icon" onClick={() => folderInputRef.current?.click()}><FolderOpen size={16} /></button></div>
+              <div className="layers-meta"><span>{(project.importedFiles ?? []).length} files</span><button onClick={() => setLiveDevMode(!liveDevMode)}><Play size={13} /> {liveDevMode ? "Canvas" : "pnpm dev Mount"}</button></div>
+              {project.importedFiles && project.importedFiles.length > 0 ? (
+                <div className="source-file-tree">
+                  <div className="file-list-tree" style={{ maxHeight: activeFilePath ? "180px" : "480px", overflowY: "auto", borderBottom: "1px solid rgba(255,255,255,.08)", marginBottom: "12px" }}>
+                    {project.importedFiles.map((file) => (
+                      <button key={file.path} className={`layer-row ${activeFilePath === file.path ? "active" : ""}`} onClick={() => selectFileToEdit(file.path)}>
+                        <FileCode2 size={13} className="layer-kind" />
+                        <span className="file-path-text" style={{ fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {activeFilePath && (
+                    <div className="file-editor-box" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      <div className="file-editor-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "11px", color: "#a7f0d4" }}>{activeFilePath}</span>
+                        <button className="button-primary button-sm" style={{ padding: "4px 10px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }} onClick={handleSaveFileContent}><Save size={12} /> Apply & Sync</button>
+                      </div>
+                      <textarea className="file-editor-textarea" style={{ width: "100%", background: "#14121c", color: "#f7f6f2", border: "1px solid rgba(255,255,255,.12)", borderRadius: "8px", padding: "8px", fontFamily: "monospace", fontSize: "11px", lineHeight: "1.4", resize: "vertical" }} value={fileContent} onChange={(e) => setFileContent(e.target.value)} rows={14} spellCheck={false} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="asset-empty" style={{ display: "flex", flexDirection: "column", gap: "12px", alignItems: "center", padding: "32px 16px", textAlign: "center" }}><FolderOpen size={24} /><span>Import a local folder or public GitHub repository to browse and edit project files.</span><button className="button-outline" onClick={() => setShowImport(true)}>Import Repo / Folder</button></div>
+              )}
+            </>}
           </aside>
         )}
 
@@ -787,20 +833,24 @@ export default function Home() {
             <div className="device-switcher">
               {(Object.keys(breakpointLabels) as Breakpoint[]).map((value) => <button key={value} className={breakpoint === value ? "active" : ""} onClick={() => setBreakpoint(value)}>{value === "desktop" ? "▣" : value === "tablet" ? "▤" : "▥"}<span>{breakpointLabels[value].label}</span><em>{breakpointWidths[value]}px</em></button>)}
             </div>
-            <div className="workspace-tools"><label className="viewport-size-control" title={`Edit ${breakpointLabels[breakpoint].label} viewport width`}><span>W</span><input type="number" min="240" max="1800" step="1" value={canvasWidth} onChange={(event) => updateBreakpointWidth(Number(event.target.value))} /><em>px</em></label><select className="orientation-control" value={breakpointOrientations[breakpoint]} onChange={(event) => updateBreakpointOrientation(event.target.value as "portrait" | "landscape")} aria-label="Viewport orientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select><span className={`override-badge ${hasActiveOverride ? "active" : ""}`}>{hasActiveOverride ? "Override" : "Inherited"}</span><button className="tool-button active"><MousePointer2 size={15} /></button><button className="tool-button"><Move size={15} /></button><span className="toolbar-divider" /><button className="tool-button" onClick={() => setZoom((value) => Math.max(40, value - 10))}><ArrowLeft size={14} /></button><span className="zoom-value">{zoom}%</span><button className="tool-button" onClick={() => setZoom((value) => Math.min(110, value + 10))}><ArrowRight size={14} /></button></div>
+            <div className="workspace-tools"><label className="viewport-size-control" title={`Edit ${breakpointLabels[breakpoint].label} viewport width`}><span>W</span><input type="number" min="240" max="1800" step="1" value={canvasWidth} onChange={(event) => updateBreakpointWidth(Number(event.target.value))} /><em>px</em></label><select className="orientation-control" value={breakpointOrientations[breakpoint]} onChange={(event) => updateBreakpointOrientation(event.target.value as "portrait" | "landscape")} aria-label="Viewport orientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select><span className={`override-badge ${hasActiveOverride ? "active" : ""}`}>{hasActiveOverride ? "Override" : "Inherited"}</span><button className={`mode-toggle ${liveDevMode ? "active" : ""}`} title="Toggle pnpm dev Live Mount Preview" onClick={() => setLiveDevMode(!liveDevMode)}><Play size={13} fill="currentColor" /> pnpm dev Mount</button><button className="tool-button active"><MousePointer2 size={15} /></button><button className="tool-button"><Move size={15} /></button><span className="toolbar-divider" /><button className="tool-button" onClick={() => setZoom((value) => Math.max(40, value - 10))}><ArrowLeft size={14} /></button><span className="zoom-value">{zoom}%</span><button className="tool-button" onClick={() => setZoom((value) => Math.min(110, value + 10))}><ArrowRight size={14} /></button></div>
           </div>}
           <div className="canvas-stage" onClick={() => setSelectedId("")}>
-            <div className="canvas-stage-label top-label"><span className="live-dot" /> LIVE CANVAS <span className="stage-divider" /> {breakpointLabels[breakpoint].label.toUpperCase()} / {canvasWidth}px</div>
+            <div className="canvas-stage-label top-label"><span className="live-dot" /> {liveDevMode ? "PNPM DEV LIVE MOUNT" : "LIVE CANVAS"} <span className="stage-divider" /> {breakpointLabels[breakpoint].label.toUpperCase()} / {canvasWidth}px</div>
             <div className="canvas-viewport" onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
-              <div
-                ref={canvasRef}
-                className="page-canvas"
-                style={{ width: canvasWidth, height: canvasHeight, transform: `scale(${zoom / 100})`, transformOrigin: "center top" }}
-                onClick={(event) => event.stopPropagation()}
-              >
-                {project.nodes.map((node) => <Fragment key={node.id}>{renderCanvasNode(node, true)}</Fragment>)}
-                <div className="canvas-page-number">01 <span>/</span> 03</div>
-              </div>
+              {liveDevMode ? (
+                <iframe title="pnpm dev live mount" className="live-dev-iframe" srcDoc={bundleProjectForLiveDev(project)} style={{ width: canvasWidth, height: canvasHeight, border: "1px solid rgba(167,240,212,.3)", borderRadius: 12, background: "#121018" }} />
+              ) : (
+                <div
+                  ref={canvasRef}
+                  className="page-canvas"
+                  style={{ width: canvasWidth, height: canvasHeight, transform: `scale(${zoom / 100})`, transformOrigin: "center top" }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {project.nodes.map((node) => <Fragment key={node.id}>{renderCanvasNode(node, true)}</Fragment>)}
+                  <div className="canvas-page-number">01 <span>/</span> 03</div>
+                </div>
+              )}
             </div>
             <div className="canvas-stage-label bottom-label"><span>Scroll to explore</span><span className="stage-divider" /><span>Auto layout <b>ON</b></span><span className="stage-divider" /><span>Snap <b>8px</b></span></div>
           </div>
