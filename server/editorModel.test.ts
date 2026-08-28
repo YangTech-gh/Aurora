@@ -1,0 +1,192 @@
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("./storage", () => ({ storagePut: vi.fn() }));
+import {
+  componentCatalog,
+  clampMediaTime,
+  createNode,
+  detectProjectFramework,
+  exportCss,
+  exportResponsiveCss,
+  exportFramework,
+  exportFrameworkProject,
+  exportHtml,
+  getNodeStyle,
+  gsapContextSnippet,
+  projectFromImportedFiles,
+  reconstructImportedNodes,
+  nextMediaPlayingState,
+  seekMediaElement,
+  toggleMediaPlayback,
+  starterProject,
+  updateNodeTree,
+  updateBreakpointConfig,
+} from "../client/src/lib/editorModel";
+import { moveLayer } from "../client/src/pages/Home";
+import { appRouter, decodeAssetPayload, githubRepoParts } from "./routers";
+import { storagePut } from "./storage";
+
+describe("editor model", () => {
+  it("validates GitHub repositories and asset payload limits", () => {
+    expect(githubRepoParts("https://github.com/acme/visual-forge/tree/main")).toEqual({ owner: "acme", repo: "visual-forge", branch: "main" });
+    expect(decodeAssetPayload(Buffer.from("asset-data").toString("base64")).toString()).toBe("asset-data");
+    expect(() => decodeAssetPayload(Buffer.from("0123456789").toString("base64"), 4)).toThrow("5 MB");
+  });
+
+  it("detects source framework and preserves import metadata", () => {
+    expect(detectProjectFramework([{ path: "src/App.vue" }])).toBe("vue");
+    const imported = projectFromImportedFiles([{ path: "src/App.svelte", size: 120, kind: "source" }], "folder");
+    expect(imported.origin).toBe("folder");
+    expect(imported.detectedFramework).toBe("svelte");
+    expect(imported.importedFiles?.[0]?.path).toBe("src/App.svelte");
+  });
+
+  it("exposes advanced building blocks in the library", () => {
+    expect(componentCatalog.map((item) => item.kind)).toEqual(expect.arrayContaining(["carousel", "form", "video", "scrub-video", "grid", "navbar", "card"]));
+    expect(createNode("scrub-video", 1).kind).toBe("scrub-video");
+    expect(createNode("form", 2).kind).toBe("form");
+  });
+
+  it("creates framework-aware GSAP lifecycle snippets", () => {
+    const node = { ...starterProject.nodes[0]!, animation: { ...starterProject.nodes[0]!.animation, lifecycle: "onEnter" as const, plugins: ["ScrollTrigger"] } };
+    expect(gsapContextSnippet("react", node)).toContain("useLayoutEffect");
+    expect(gsapContextSnippet("vue", node)).toContain("onMounted");
+    expect(gsapContextSnippet("svelte", node)).toContain("onMount");
+    const snippet = gsapContextSnippet("react", node);
+    expect(snippet).toContain("toggleActions");
+    expect(snippet).toContain("easeReverse");
+    expect(snippet).toContain("repeat");
+    expect(snippet).toContain("yoyo");
+    expect(snippet).toContain("stagger");
+    expect(gsapContextSnippet("react", { ...node, animation: { ...node.animation, lifecycle: "onScroll" } })).toContain("scrub: true");
+    expect(gsapContextSnippet("vue", node)).toContain("registerPlugin(ScrollTrigger)");
+  });
+
+  it("reconstructs visual nodes from imported source files", () => {
+    const files = [{ path: "src/App.vue", content: "<template><section class='hero'><h1>Hello imported</h1><button>Start</button></section></template>" }];
+    const nodes = reconstructImportedNodes(files, "vue");
+    expect(nodes.length).toBeGreaterThanOrEqual(2);
+    expect(nodes.some((node) => node.kind === "heading" && node.content.includes("Hello imported"))).toBe(true);
+    const imported = projectFromImportedFiles([{ ...files[0], size: files[0].content.length, kind: "source" }], "folder");
+    expect(imported.nodes[0]?.children?.length).toBeGreaterThan(0);
+    expect(starterProject.breakpoints?.mobile).toBe(390);
+    expect(starterProject.breakpointOrientations?.mobile).toBe("portrait");
+    expect(exportResponsiveCss(starterProject)).toContain("@media (max-width: 390px)");
+  });
+
+  it("clamps and seeks scrub media safely", () => {
+    expect(clampMediaTime(-5, 12)).toBe(0);
+    expect(clampMediaTime(42, 12)).toBe(12);
+    expect(clampMediaTime(Number.NaN, 12)).toBe(0);
+    const media = { currentTime: 0 };
+    expect(seekMediaElement(media, 18, 12)).toBe(12);
+    expect(media.currentTime).toBe(12);
+  });
+
+  it("toggles scrub media play and pause explicitly", async () => {
+    const play = vi.fn(async () => undefined);
+    const pause = vi.fn();
+    const media = { paused: true, play, pause };
+    expect(await toggleMediaPlayback(media)).toBe(true);
+    expect(play).toHaveBeenCalledOnce();
+    let mediaPlaying = nextMediaPlayingState({}, "video-1", true);
+    expect(mediaPlaying["video-1"]).toBe(true);
+    media.paused = false;
+    expect(await toggleMediaPlayback(media)).toBe(false);
+    mediaPlaying = nextMediaPlayingState(mediaPlaying, "video-1", false);
+    expect(mediaPlaying["video-1"]).toBe(false);
+    expect(pause).toHaveBeenCalledOnce();
+  });
+
+  it("uploads an asset through the protected mutation and rejects oversized bytes", async () => {
+    vi.mocked(storagePut).mockResolvedValue({ key: "1-assets/demo.png", url: "https://storage.example/demo.png" });
+    const ctx = { user: { id: 1, openId: "test", name: "Test", email: "test@example.com", loginMethod: "test", role: "user", createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date() }, req: {} as any, res: {} as any };
+    const result = await appRouter.createCaller(ctx).projects.uploadAsset({ name: "demo.png", mimeType: "image/png", size: 4, data: Buffer.from("demo").toString("base64") });
+    expect(result.url).toBe("https://storage.example/demo.png");
+    expect(storagePut).toHaveBeenCalled();
+    await expect(appRouter.createCaller(ctx).projects.uploadAsset({ name: "large.bin", mimeType: "application/octet-stream", size: 5_000_000, data: Buffer.alloc(5_000_001).toString("base64") })).rejects.toMatchObject({ code: "PAYLOAD_TOO_LARGE" });
+  });
+  it("persists breakpoint width and orientation immutably", () => {
+    const next = updateBreakpointConfig(starterProject, "mobile", { width: 412, orientation: "landscape" });
+    expect(next.breakpoints?.mobile).toBe(412);
+    expect(next.breakpointOrientations?.mobile).toBe("landscape");
+    expect(starterProject.breakpoints?.mobile).toBe(390);
+    expect(starterProject.breakpointOrientations?.mobile).toBe("portrait");
+  });
+
+  it("keeps desktop styles as the responsive base", () => {
+    const hero = starterProject.nodes[0];
+    const mobile = getNodeStyle(hero, "mobile");
+    expect(mobile.width).toBe(390);
+    expect(mobile.height).toBe(620);
+  });
+
+  it("updates a nested node without mutating the original project", () => {
+    const original = starterProject.nodes;
+    const next = updateNodeTree(original, "hero-heading", (node) => ({ ...node, content: "Updated" }));
+    expect(next).not.toBe(original);
+    expect(next[0]?.children?.find((node) => node.id === "hero-heading")?.content).toBe("Updated");
+    expect(original[0]?.children?.find((node) => node.id === "hero-heading")?.content).toContain("Shape the interface");
+  });
+
+  it("moves a nested layer into another parent", () => {
+    const first = JSON.parse(JSON.stringify(starterProject.nodes[0]));
+    const second = createNode("section", 12);
+    const moved = moveLayer([first, second], "hero-heading", second.id);
+    expect(moved[0]?.children?.some((node) => node.id === "hero-heading")).toBe(false);
+    expect(moved[1]?.children?.some((node) => node.id === "hero-heading")).toBe(true);
+  });
+
+  it("re-inserts a moved layer after a non-container target in another parent", () => {
+    const first = JSON.parse(JSON.stringify(starterProject.nodes[0]));
+    const second = createNode("section", 13);
+    const target = createNode("paragraph", 14);
+    second.children = [target];
+    const moved = moveLayer([first, second], "hero-heading", target.id);
+    expect(moved[0]?.children?.some((node) => node.id === "hero-heading")).toBe(false);
+    expect(moved[1]?.children?.map((node) => node.id)).toEqual([target.id, "hero-heading"]);
+  });
+
+  it("exports advanced media markup with framework-valid React attributes", () => {
+    const project = JSON.parse(JSON.stringify(starterProject));
+    const video = createNode("scrub-video", 90);
+    video.asset = { url: "https://cdn.example.com/demo.mp4", mimeType: "video/mp4", fileName: "demo.mp4" };
+    video.video = { src: video.asset.url, duration: 24, currentTime: 0, muted: true, loop: true };
+    project.nodes[0].children.push(video);
+    const react = exportFramework(project, "react");
+    expect(react).toContain("className=\"vf-scrub-video\"");
+    expect(react).toContain("playsInline");
+    expect(react).toContain("data-visual-node=\"scrub-video-");
+    expect(react).not.toContain("<video class=\"");
+  });
+
+  it("exports the complete project manifest for each framework", () => {
+    const animated = { ...starterProject, nodes: [{ ...starterProject.nodes[0]!, animation: { ...starterProject.nodes[0]!.animation, enabled: true } }] };
+    expect(exportFrameworkProject(animated, "vue")).toContain("visualForgeManifest");
+    expect(exportFrameworkProject(animated, "react")).toContain("data-motion-lifecycle");
+    expect(exportFrameworkProject(animated, "svelte")).toContain("breakpoints");
+  });
+
+  it("exports the same model to HTML, CSS and framework representations", () => {
+    const html = exportHtml(starterProject);
+    const css = exportCss();
+    const vue = exportFramework(starterProject, "vue");
+    const react = exportFramework(starterProject, "react");
+    const svelte = exportFramework(starterProject, "svelte");
+
+    expect(html).toContain("data-node-id=\"hero-section\"");
+    expect(css).toContain("@media (max-width: 720px)");
+    expect(vue).toContain("<template>");
+    expect(vue).toContain("class=\"vf-heading\"");
+    expect(vue).toContain(":style=\"{ position:");
+    expect(vue).toContain("Shape the interface.");
+    expect(vue).not.toContain("className");
+    expect(react).toContain("GeneratedPage");
+    expect(react).toContain("className=\"vf-heading\"");
+    expect(react).toContain("style={");
+    expect(svelte).toContain("<script lang=\"ts\">");
+    expect(svelte).toContain("class=\"vf-heading\"");
+    expect(svelte).toContain("style=\"position:absolute");
+    expect(svelte).not.toContain("className");
+  });
+});

@@ -1,0 +1,2 @@
+Runtime evidence after marker 2026-08-28T15:00:15Z
+No new browser warnings or errors after final render.
