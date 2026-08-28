@@ -11,9 +11,13 @@ import {
   exportFramework,
   exportFrameworkProject,
   exportHtml,
+  generateProjectZipFiles,
+  getProjectPageNodes,
   getNodeStyle,
   gsapContextSnippet,
+  migrateProject,
   projectFromImportedFiles,
+  switchProjectPage,
   updateImportedFileContent,
   bundleProjectForLiveDev,
   reconstructImportedNodes,
@@ -182,11 +186,85 @@ describe("editor model", () => {
     expect(react).not.toContain("<video class=\"");
   });
 
-  it("exports the complete project manifest for each framework", () => {
+  it("exports the complete project manifest and style injection for React", () => {
     const animated = { ...starterProject, nodes: [{ ...starterProject.nodes[0]!, animation: { ...starterProject.nodes[0]!.animation, enabled: true } }] };
     expect(exportFrameworkProject(animated, "vue")).toContain("visualForgeManifest");
-    expect(exportFrameworkProject(animated, "react")).toContain("data-motion-lifecycle");
+    const reactProjectExport = exportFrameworkProject(animated, "react");
+    expect(reactProjectExport).toContain("data-motion-lifecycle");
+    expect(reactProjectExport).toContain("<style dangerouslySetInnerHTML={{ __html: visualForgeResponsiveCss }} />");
     expect(exportFrameworkProject(animated, "svelte")).toContain("breakpoints");
+  });
+
+  it("restores custom breakpoints and orientations in migrateProject", () => {
+    const customProject = { ...starterProject, breakpoints: { desktop: 1200, tablet: 800, mobile: 400 }, breakpointOrientations: { desktop: "landscape" as const, tablet: "portrait" as const, mobile: "landscape" as const } };
+    const restored = migrateProject(customProject);
+    expect(restored.breakpoints?.desktop).toBe(1200);
+    expect(restored.breakpointOrientations?.tablet).toBe("portrait");
+    expect(restored.breakpointOrientations?.mobile).toBe("landscape");
+  });
+
+  it("formats advanced GSAP motion properties correctly", () => {
+    const advancedNode = {
+      ...starterProject.nodes[0]!,
+      animation: {
+        enabled: true,
+        preset: "slide-up" as const,
+        duration: 1.2,
+        delay: 0.2,
+        ease: "power2.out",
+        easeReverse: "power2.inOut",
+        repeat: 3,
+        yoyo: true,
+        stagger: 0.15,
+        scrub: 0.5,
+        snap: "labels",
+        start: "top 80%",
+        end: "bottom 30%",
+        toggleActions: "play pause resume reset",
+        markers: true,
+        plugins: ["ScrollTrigger", "Observer"],
+        lifecycle: "onScroll" as const,
+      },
+    };
+    const snippet = gsapContextSnippet("react", advancedNode);
+    expect(snippet).toContain("repeat: 3");
+    expect(snippet).toContain("yoyo: true");
+    expect(snippet).toContain("stagger: 0.15");
+    expect(snippet).toContain("scrub: 0.5");
+    expect(snippet).toContain('snap: "labels"');
+    expect(snippet).toContain("markers: true");
+    expect(snippet).toContain("Observer");
+  });
+
+  it("manages multi-page project state and node switching", () => {
+    const p1 = switchProjectPage(starterProject, "About");
+    expect(p1.activePage).toBe("About");
+    expect(p1.pageNodes?.["Home"]).toEqual(starterProject.nodes);
+    expect(p1.pageNodes?.["About"]).toBeDefined();
+    expect(getProjectPageNodes(p1, "About")[0]?.name).toContain("About");
+
+    const p2 = switchProjectPage(p1, "Home");
+    expect(p2.activePage).toBe("Home");
+    expect(p2.nodes).toEqual(starterProject.nodes);
+  });
+
+  it("generates complete ZIP package file manifests for React, Vue, Svelte, and HTML", () => {
+    const reactZip = generateProjectZipFiles(starterProject, "react");
+    expect(reactZip["package.json"]).toContain('"react"');
+    expect(reactZip["src/App.tsx"]).toContain('import Home from "./pages/Home"');
+    expect(reactZip["src/pages/Home.tsx"]).toContain("export default function Home()");
+
+    const vueZip = generateProjectZipFiles(starterProject, "vue");
+    expect(vueZip["package.json"]).toContain('"vue"');
+    expect(vueZip["src/App.vue"]).toContain("<template>");
+
+    const svelteZip = generateProjectZipFiles(starterProject, "svelte");
+    expect(svelteZip["package.json"]).toContain('"svelte"');
+    expect(svelteZip["src/App.svelte"]).toContain("<script");
+
+    const htmlZip = generateProjectZipFiles(starterProject, "html");
+    expect(htmlZip["index.html"]).toContain("<!doctype html>");
+    expect(htmlZip["styles.css"]).toContain(".vf-page");
   });
 
   it("exports the same model to HTML, CSS and framework representations", () => {
