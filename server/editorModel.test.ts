@@ -13,6 +13,7 @@ import {
   exportHtml,
   getNodeStyle,
   gsapContextSnippet,
+  migrateProject,
   projectFromImportedFiles,
   updateImportedFileContent,
   bundleProjectForLiveDev,
@@ -182,11 +183,54 @@ describe("editor model", () => {
     expect(react).not.toContain("<video class=\"");
   });
 
-  it("exports the complete project manifest for each framework", () => {
+  it("exports the complete project manifest and style injection for React", () => {
     const animated = { ...starterProject, nodes: [{ ...starterProject.nodes[0]!, animation: { ...starterProject.nodes[0]!.animation, enabled: true } }] };
     expect(exportFrameworkProject(animated, "vue")).toContain("visualForgeManifest");
-    expect(exportFrameworkProject(animated, "react")).toContain("data-motion-lifecycle");
+    const reactProjectExport = exportFrameworkProject(animated, "react");
+    expect(reactProjectExport).toContain("data-motion-lifecycle");
+    expect(reactProjectExport).toContain("<style dangerouslySetInnerHTML={{ __html: visualForgeResponsiveCss }} />");
     expect(exportFrameworkProject(animated, "svelte")).toContain("breakpoints");
+  });
+
+  it("restores custom breakpoints and orientations in migrateProject", () => {
+    const customProject = { ...starterProject, breakpoints: { desktop: 1200, tablet: 800, mobile: 400 }, breakpointOrientations: { desktop: "landscape" as const, tablet: "portrait" as const, mobile: "landscape" as const } };
+    const restored = migrateProject(customProject);
+    expect(restored.breakpoints?.desktop).toBe(1200);
+    expect(restored.breakpointOrientations?.tablet).toBe("portrait");
+    expect(restored.breakpointOrientations?.mobile).toBe("landscape");
+  });
+
+  it("formats advanced GSAP motion properties correctly", () => {
+    const advancedNode = {
+      ...starterProject.nodes[0]!,
+      animation: {
+        enabled: true,
+        preset: "slide-up" as const,
+        duration: 1.2,
+        delay: 0.2,
+        ease: "power2.out",
+        easeReverse: "power2.inOut",
+        repeat: 3,
+        yoyo: true,
+        stagger: 0.15,
+        scrub: 0.5,
+        snap: "labels",
+        start: "top 80%",
+        end: "bottom 30%",
+        toggleActions: "play pause resume reset",
+        markers: true,
+        plugins: ["ScrollTrigger", "Observer"],
+        lifecycle: "onScroll" as const,
+      },
+    };
+    const snippet = gsapContextSnippet("react", advancedNode);
+    expect(snippet).toContain("repeat: 3");
+    expect(snippet).toContain("yoyo: true");
+    expect(snippet).toContain("stagger: 0.15");
+    expect(snippet).toContain("scrub: 0.5");
+    expect(snippet).toContain('snap: "labels"');
+    expect(snippet).toContain("markers: true");
+    expect(snippet).toContain("Observer");
   });
 
   it("exports the same model to HTML, CSS and framework representations", () => {

@@ -854,7 +854,11 @@ export default function Home() {
             </div>
             <div className="canvas-stage-label bottom-label"><span>Scroll to explore</span><span className="stage-divider" /><span>Auto layout <b>ON</b></span><span className="stage-divider" /><span>Snap <b>8px</b></span></div>
           </div>
-          {!previewMode && <div className="page-strip"><div className="page-strip-label"><span>Pages</span><button onClick={() => toast.success("New page created") }><Plus size={14} /></button></div><div className="page-tabs">{project.pages.map((page, index) => <button key={page} className={project.activePage === page ? "active" : ""} onClick={() => setProject((current) => ({ ...current, activePage: page }))}><span className="page-thumb"><span className={`thumb-${index + 1}`} /></span><small>{page}</small><em>0{index + 1}</em></button>)}</div><div className="strip-actions"><button onClick={() => toast.info("Page settings coming next")}><Settings2 size={14} /></button><button onClick={() => toast.info("More page actions coming next")}><MoreHorizontal size={16} /></button></div></div>}
+          {!previewMode && <div className="page-strip"><div className="page-strip-label"><span>Pages</span><button title="Create page" onClick={() => {
+            const pageName = `Page ${project.pages.length + 1}`;
+            setProjectWithHistory({ ...project, pages: [...project.pages, pageName], activePage: pageName, updatedAt: new Date().toISOString() });
+            toast.success(`Created and selected ${pageName}`);
+          }}><Plus size={14} /></button></div><div className="page-tabs">{project.pages.map((page, index) => <button key={page} className={project.activePage === page ? "active" : ""} onClick={() => setProject((current) => ({ ...current, activePage: page }))}><span className="page-thumb"><span className={`thumb-${(index % 3) + 1}`} /></span><small>{page}</small><em>0{index + 1}</em></button>)}</div><div className="strip-actions"><button onClick={() => toast.info(`Active page: ${project.activePage}`)}><Settings2 size={14} /></button><button onClick={() => toast.info("Page options ready")}><MoreHorizontal size={16} /></button></div></div>}
         </main>
 
         {!previewMode && <aside className="inspector-panel">

@@ -368,6 +368,8 @@ export function updateBreakpointConfig(project: EditorProject, breakpoint: Break
 
 export function migrateProject(input: EditorProject): EditorProject {
   const next = JSON.parse(JSON.stringify(input)) as EditorProject;
+  next.breakpoints = { desktop: 1000, tablet: 768, mobile: 390, ...(input.breakpoints ?? {}) };
+  next.breakpointOrientations = { desktop: "landscape", tablet: "landscape", mobile: "portrait", ...(input.breakpointOrientations ?? {}) };
   const hero = next.nodes[0];
   if (!hero) return next;
   hero.styles.mobile = { ...hero.styles.mobile, width: 390, height: 620 };
@@ -879,5 +881,5 @@ export function exportFrameworkProject(project: EditorProject, framework: "vue" 
   const responsiveCss = exportResponsiveCss(project);
   if (framework === "vue") return `<template>\n  <main class=\"vf-page\">\n${body}\n  </main>\n</template>\n\n<style>\n${responsiveCss}\n</style>\n\n<script setup lang=\"ts\">\nimport { onMounted, onUnmounted } from \"vue\";\nimport { gsap } from \"gsap\";\nconst visualForgeManifest = ${manifest};\nlet ctx: gsap.Context;\nonMounted(() => { ctx = gsap.context(() => {}); });\nonUnmounted(() => ctx?.revert());\n</script>`;
   if (framework === "svelte") return `<style>\n${responsiveCss}\n</style>\n\n<script lang=\"ts\">\nimport { onMount } from \"svelte\";\nimport gsap from \"gsap\";\nconst visualForgeManifest = ${manifest};\nonMount(() => { const ctx = gsap.context(() => {}); return () => ctx.revert(); });\n</script>\n\n<main class=\"vf-page\">\n${body}\n</main>`;
-  return `import { useLayoutEffect } from \"react\";\nimport gsap from \"gsap\";\nconst visualForgeManifest = ${manifest};\nconst visualForgeResponsiveCss = ${JSON.stringify(responsiveCss)};\n\nexport default function GeneratedPage() {\n  useLayoutEffect(() => { const ctx = gsap.context(() => {}); return () => ctx.revert(); }, []);\n  return (\n    <main className=\"vf-page\">\n${body}\n    </main>\n  );\n}`;
+  return `import { useLayoutEffect } from \"react\";\nimport gsap from \"gsap\";\nconst visualForgeManifest = ${manifest};\nconst visualForgeResponsiveCss = ${JSON.stringify(responsiveCss)};\n\nexport default function GeneratedPage() {\n  useLayoutEffect(() => { const ctx = gsap.context(() => {}); return () => ctx.revert(); }, []);\n  return (\n    <>\n      <style dangerouslySetInnerHTML={{ __html: visualForgeResponsiveCss }} />\n      <main className=\"vf-page\">\n${body}\n      </main>\n    </>\n  );\n}`;
 }
