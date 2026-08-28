@@ -74,6 +74,7 @@ import {
   seekMediaElement,
   nextMediaPlayingState,
   toggleMediaPlayback,
+  switchProjectPage,
 } from "@/lib/editorModel";
 import type { Breakpoint, ComponentKind, EditorNode, EditorProject, NodeStyle } from "@/lib/editorModel";
 import { trpc } from "@/lib/trpc";
@@ -300,10 +301,15 @@ export default function Home() {
   }
 
   function updateNode(id: string, updater: (node: EditorNode) => EditorNode, withHistory = false) {
+    const updatedNodes = updateNodeTree(project.nodes, id, updater);
     const next = {
       ...project,
       updatedAt: new Date().toISOString(),
-      nodes: updateNodeTree(project.nodes, id, updater),
+      nodes: updatedNodes,
+      pageNodes: {
+        ...(project.pageNodes ?? {}),
+        [project.activePage]: updatedNodes,
+      },
     };
     if (withHistory) setProjectWithHistory(next);
     else {
@@ -622,21 +628,54 @@ export default function Home() {
     previewContext.current?.revert();
     const targets = Array.from(canvasRef.current.querySelectorAll<HTMLElement>("[data-visual-node]"));
     previewContext.current = gsap.context(() => {
-    const timeline = gsap.timeline({ onComplete: () => setIsPlaying(false) });
-    targets.forEach((target) => {
-      const node = findNode(project.nodes, target.dataset.visualNode ?? "");
-      const preset = node?.animation.preset ?? "fade";
-      if (node?.animation.enabled === false) return;
-      const vars = preset === "slide-up" ? { y: 20, opacity: 0 } : preset === "scale" ? { scale: 0.92, opacity: 0 } : { opacity: 0 };
-      timeline.fromTo(target, vars, { x: 0, y: 0, scale: 1, opacity: 1, duration: node?.animation.duration ?? 0.7, delay: node?.animation.delay ?? 0, ease: node?.animation.ease ?? "power3.out", easeReverse: node?.animation.easeReverse ?? false, repeat: node?.animation.repeat ?? 0, yoyo: node?.animation.yoyo ?? false, stagger: node?.animation.stagger ?? 0 }, 0);
-    });
-    });
-    toast.success("GSAP timeline previewed on canvas");
+      const timeline = gsap.timeline({ onComplete: () => setIsPlaying(false) });
+      targets.forEach((target) => {
+        const nodeId = target.dataset.visualNode;
+        if (!nodeId) return;
+        const node = findNode(project.nodes, nodeId);
+        if (!node || !node.animation || !node.animation.enabled || node.animation.preset === "none") return;
+        const anim = node.animation;
+        const fromVars: gsap.TweenVars = { opacity: 0 };
+        if (anim.preset === "slide-up") fromVars.y = 28;
+        if (anim.preset === "scale") fromVars.scale = 0.88;
+
+        const toVars: gsap.TweenVars = {
+          x: 0,
+          y: 0,
+          scale: 1,
+          opacity: 1,
+          duration: anim.duration ?? 0.8,
+          delay: anim.delay ?? 0,
+          ease: anim.ease ?? "power3.out",
+          repeat: anim.repeat ?? 0,
+          yoyo: Boolean(anim.yoyo),
+        };
+        timeline.fromTo(target, fromVars, toVars, 0);
+      });
+    }, canvasRef.current);
+    toast.success("GSAP 3.15 animation context previewed");
   }
 
   function copyCode() {
     navigator.clipboard?.writeText(currentCode);
     toast.success(`${codeTab.toUpperCase()} copied to clipboard`);
+  }
+
+  async function downloadZipExport() {
+    const framework = codeTab === "css" || codeTab === "gsap" ? "html" : codeTab;
+    try {
+      const { downloadProjectZip } = await import("@/lib/editorModel");
+      const blob = await downloadProjectZip(project, framework as "html" | "vue" | "react" | "svelte");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${project.name.toLowerCase().replace(/\s+/g, "-")}-${framework}-project.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported complete ${framework.toUpperCase()} project ZIP`);
+    } catch {
+      toast.error("Failed to package ZIP export");
+    }
   }
 
   function downloadCode() {
@@ -856,9 +895,14 @@ export default function Home() {
           </div>
           {!previewMode && <div className="page-strip"><div className="page-strip-label"><span>Pages</span><button title="Create page" onClick={() => {
             const pageName = `Page ${project.pages.length + 1}`;
-            setProjectWithHistory({ ...project, pages: [...project.pages, pageName], activePage: pageName, updatedAt: new Date().toISOString() });
+            const updatedProject = switchProjectPage({ ...project, pages: [...project.pages, pageName] }, pageName);
+            setProjectWithHistory(updatedProject);
             toast.success(`Created and selected ${pageName}`);
-          }}><Plus size={14} /></button></div><div className="page-tabs">{project.pages.map((page, index) => <button key={page} className={project.activePage === page ? "active" : ""} onClick={() => setProject((current) => ({ ...current, activePage: page }))}><span className="page-thumb"><span className={`thumb-${(index % 3) + 1}`} /></span><small>{page}</small><em>0{index + 1}</em></button>)}</div><div className="strip-actions"><button onClick={() => toast.info(`Active page: ${project.activePage}`)}><Settings2 size={14} /></button><button onClick={() => toast.info("Page options ready")}><MoreHorizontal size={16} /></button></div></div>}
+          }}><Plus size={14} /></button></div><div className="page-tabs">{project.pages.map((page, index) => <button key={page} className={project.activePage === page ? "active" : ""} onClick={() => {
+            if (project.activePage !== page) {
+              setProject((current) => switchProjectPage(current, page));
+            }
+          }}><span className="page-thumb"><span className={`thumb-${(index % 3) + 1}`} /></span><small>{page}</small><em>0{index + 1}</em></button>)}</div><div className="strip-actions"><button onClick={() => toast.info(`Active page: ${project.activePage}`)}><Settings2 size={14} /></button><button onClick={() => toast.info("Page options ready")}><MoreHorizontal size={16} /></button></div></div>}
         </main>
 
         {!previewMode && <aside className="inspector-panel">

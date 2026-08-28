@@ -11,10 +11,13 @@ import {
   exportFramework,
   exportFrameworkProject,
   exportHtml,
+  generateProjectZipFiles,
+  getProjectPageNodes,
   getNodeStyle,
   gsapContextSnippet,
   migrateProject,
   projectFromImportedFiles,
+  switchProjectPage,
   updateImportedFileContent,
   bundleProjectForLiveDev,
   reconstructImportedNodes,
@@ -231,6 +234,37 @@ describe("editor model", () => {
     expect(snippet).toContain('snap: "labels"');
     expect(snippet).toContain("markers: true");
     expect(snippet).toContain("Observer");
+  });
+
+  it("manages multi-page project state and node switching", () => {
+    const p1 = switchProjectPage(starterProject, "About");
+    expect(p1.activePage).toBe("About");
+    expect(p1.pageNodes?.["Home"]).toEqual(starterProject.nodes);
+    expect(p1.pageNodes?.["About"]).toBeDefined();
+    expect(getProjectPageNodes(p1, "About")[0]?.name).toContain("About");
+
+    const p2 = switchProjectPage(p1, "Home");
+    expect(p2.activePage).toBe("Home");
+    expect(p2.nodes).toEqual(starterProject.nodes);
+  });
+
+  it("generates complete ZIP package file manifests for React, Vue, Svelte, and HTML", () => {
+    const reactZip = generateProjectZipFiles(starterProject, "react");
+    expect(reactZip["package.json"]).toContain('"react"');
+    expect(reactZip["src/App.tsx"]).toContain('import Home from "./pages/Home"');
+    expect(reactZip["src/pages/Home.tsx"]).toContain("export default function Home()");
+
+    const vueZip = generateProjectZipFiles(starterProject, "vue");
+    expect(vueZip["package.json"]).toContain('"vue"');
+    expect(vueZip["src/App.vue"]).toContain("<template>");
+
+    const svelteZip = generateProjectZipFiles(starterProject, "svelte");
+    expect(svelteZip["package.json"]).toContain('"svelte"');
+    expect(svelteZip["src/App.svelte"]).toContain("<script");
+
+    const htmlZip = generateProjectZipFiles(starterProject, "html");
+    expect(htmlZip["index.html"]).toContain("<!doctype html>");
+    expect(htmlZip["styles.css"]).toContain(".vf-page");
   });
 
   it("exports the same model to HTML, CSS and framework representations", () => {

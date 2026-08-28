@@ -81,6 +81,7 @@ export type EditorProject = {
   activePage: string;
   pages: string[];
   nodes: EditorNode[];
+  pageNodes?: Record<string, EditorNode[]>;
   updatedAt: string;
   breakpoints?: Record<Breakpoint, number>;
   breakpointOrientations?: Record<Breakpoint, "portrait" | "landscape">;
@@ -366,10 +367,50 @@ export function updateBreakpointConfig(project: EditorProject, breakpoint: Break
   };
 }
 
+export function getProjectPageNodes(project: EditorProject, pageName: string): EditorNode[] {
+  if (project.pageNodes?.[pageName]) {
+    return project.pageNodes[pageName]!;
+  }
+  if (pageName === "Home" || pageName === project.activePage) {
+    return project.nodes;
+  }
+  // Generate starter nodes for secondary pages
+  const section = createNode("section", 0);
+  section.name = `${pageName} / Section`;
+  const heading = createNode("heading", 1);
+  heading.content = pageName === "About" ? "About Aurora Studio\nOur Vision & Team" : pageName === "Contact" ? "Get in Touch\nLet's Build Together" : `${pageName} Page\nVisual Forge Component`;
+  const text = createNode("paragraph", 2);
+  text.content = pageName === "About" ? "We build next-generation interfaces with visual-first controls and frame-accurate motion." : pageName === "Contact" ? "Send us a message or request a demo for your development team." : "Manage and compose nodes for this page directly on canvas.";
+  section.children = [heading, text];
+  return [section];
+}
+
+export function switchProjectPage(project: EditorProject, targetPage: string): EditorProject {
+  const currentNodes = project.nodes;
+  const pageNodesMap = {
+    ...(project.pageNodes ?? {}),
+    [project.activePage]: currentNodes,
+  };
+  const targetNodes = pageNodesMap[targetPage] ?? getProjectPageNodes({ ...project, pageNodes: pageNodesMap }, targetPage);
+  return {
+    ...project,
+    activePage: targetPage,
+    pageNodes: {
+      ...pageNodesMap,
+      [targetPage]: targetNodes,
+    },
+    nodes: targetNodes,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function migrateProject(input: EditorProject): EditorProject {
   const next = JSON.parse(JSON.stringify(input)) as EditorProject;
   next.breakpoints = { desktop: 1000, tablet: 768, mobile: 390, ...(input.breakpoints ?? {}) };
   next.breakpointOrientations = { desktop: "landscape", tablet: "landscape", mobile: "portrait", ...(input.breakpointOrientations ?? {}) };
+  if (!next.pageNodes) {
+    next.pageNodes = { [next.activePage || "Home"]: next.nodes };
+  }
   const hero = next.nodes[0];
   if (!hero) return next;
   hero.styles.mobile = { ...hero.styles.mobile, width: 390, height: 620 };
@@ -882,4 +923,110 @@ export function exportFrameworkProject(project: EditorProject, framework: "vue" 
   if (framework === "vue") return `<template>\n  <main class=\"vf-page\">\n${body}\n  </main>\n</template>\n\n<style>\n${responsiveCss}\n</style>\n\n<script setup lang=\"ts\">\nimport { onMounted, onUnmounted } from \"vue\";\nimport { gsap } from \"gsap\";\nconst visualForgeManifest = ${manifest};\nlet ctx: gsap.Context;\nonMounted(() => { ctx = gsap.context(() => {}); });\nonUnmounted(() => ctx?.revert());\n</script>`;
   if (framework === "svelte") return `<style>\n${responsiveCss}\n</style>\n\n<script lang=\"ts\">\nimport { onMount } from \"svelte\";\nimport gsap from \"gsap\";\nconst visualForgeManifest = ${manifest};\nonMount(() => { const ctx = gsap.context(() => {}); return () => ctx.revert(); });\n</script>\n\n<main class=\"vf-page\">\n${body}\n</main>`;
   return `import { useLayoutEffect } from \"react\";\nimport gsap from \"gsap\";\nconst visualForgeManifest = ${manifest};\nconst visualForgeResponsiveCss = ${JSON.stringify(responsiveCss)};\n\nexport default function GeneratedPage() {\n  useLayoutEffect(() => { const ctx = gsap.context(() => {}); return () => ctx.revert(); }, []);\n  return (\n    <>\n      <style dangerouslySetInnerHTML={{ __html: visualForgeResponsiveCss }} />\n      <main className=\"vf-page\">\n${body}\n      </main>\n    </>\n  );\n}`;
+}
+
+import JSZip from "jszip";
+
+export function generateProjectZipFiles(project: EditorProject, framework: "html" | "vue" | "react" | "svelte"): Record<string, string> {
+  const files: Record<string, string> = {};
+  const responsiveCss = exportResponsiveCss(project);
+  const pages = project.pages.length ? project.pages : ["Home"];
+
+  if (framework === "react") {
+    files["package.json"] = JSON.stringify({
+      name: project.name.toLowerCase().replace(/\s+/g, "-"),
+      private: true,
+      version: "1.0.0",
+      type: "module",
+      scripts: { dev: "vite", build: "vite build", preview: "vite preview" },
+      dependencies: { react: "^18.3.1", "react-dom": "^18.3.1", gsap: "^3.12.5" },
+      devDependencies: { "@types/react": "^18.3.1", "@types/react-dom": "^18.3.1", "@vitejs/plugin-react": "^4.3.1", typescript: "^5.5.3", vite: "^5.4.1" },
+    }, null, 2);
+    files["vite.config.ts"] = `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\nexport default defineConfig({ plugins: [react()] });\n`;
+    files["index.html"] = `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>${escapeHtml(project.name)}</title>\n</head>\n<body>\n  <div id="root"></div>\n  <script type="module" src="/src/main.tsx"></script>\n</body>\n</html>\n`;
+    files["src/index.css"] = responsiveCss;
+    files["src/main.tsx"] = `import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App";\nimport "./index.css";\n\nReactDOM.createRoot(document.getElementById("root")!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>\n);\n`;
+
+    pages.forEach((pageName) => {
+      const pageNodes = getProjectPageNodes(project, pageName);
+      const componentName = pageName.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+      const body = pageNodes.map((node) => renderFrameworkNode(node, "react", "desktop")).join("\n");
+      files[`src/pages/${componentName}.tsx`] = `import { useLayoutEffect, useRef } from "react";\nimport gsap from "gsap";\nimport { ScrollTrigger } from "gsap/ScrollTrigger";\ngsap.registerPlugin(ScrollTrigger);\n\nexport default function ${componentName}() {\n  const containerRef = useRef<HTMLDivElement>(null);\n  useLayoutEffect(() => {\n    const ctx = gsap.context(() => {\n      containerRef.current?.querySelectorAll("[data-animation]").forEach((el) => {\n        const preset = el.getAttribute("data-animation");\n        const vars: gsap.TweenVars = { opacity: 0, duration: 0.8, ease: "power3.out" };\n        if (preset === "slide-up") vars.y = 24;\n        if (preset === "scale") vars.scale = 0.92;\n        gsap.from(el, vars);\n      });\n    }, containerRef);\n    return () => ctx.revert();\n  }, []);\n\n  return (\n    <div ref={containerRef} className="vf-page">\n${body}\n    </div>\n  );\n}\n`;
+    });
+
+    const firstPageComp = pages[0]!.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+    files["src/App.tsx"] = `import React, { useState } from "react";\n${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `import ${name} from "./pages/${name}";`; }).join("\n")}\n\nexport default function App() {\n  const [activeTab, setActiveTab] = useState("${firstPageComp}");\n  return (\n    <div>\n      <nav style={{ display: "flex", gap: "12px", padding: "16px", background: "#17141d", color: "#f7f6f2", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>\n        ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `<button key="${name}" style={{ background: activeTab === "${name}" ? "#a7f0d4" : "transparent", color: activeTab === "${name}" ? "#121018" : "#f7f6f2", border: "none", padding: "8px 16px", borderRadius: "99px", cursor: "pointer", fontWeight: 600 }} onClick={() => setActiveTab("${name}")}>${p}</button>`; }).join("\n        ")}\n      </nav>\n      ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `{activeTab === "${name}" && <${name} />}`; }).join("\n      ")}\n    </div>\n  );\n}\n`;
+  } else if (framework === "vue") {
+    files["package.json"] = JSON.stringify({
+      name: project.name.toLowerCase().replace(/\s+/g, "-"),
+      private: true,
+      version: "1.0.0",
+      type: "module",
+      scripts: { dev: "vite", build: "vite build", preview: "vite preview" },
+      dependencies: { vue: "^3.4.31", gsap: "^3.12.5" },
+      devDependencies: { "@vitejs/plugin-vue": "^5.0.5", typescript: "^5.5.3", vite: "^5.4.1" },
+    }, null, 2);
+    files["vite.config.ts"] = `import { defineConfig } from "vite";\nimport vue from "@vitejs/plugin-vue";\nexport default defineConfig({ plugins: [vue()] });\n`;
+    files["index.html"] = `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>${escapeHtml(project.name)}</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`;
+    files["src/index.css"] = responsiveCss;
+    files["src/main.ts"] = `import { createApp } from "vue";\nimport App from "./App.vue";\nimport "./index.css";\ncreateApp(App).mount("#app");\n`;
+
+    pages.forEach((pageName) => {
+      const pageNodes = getProjectPageNodes(project, pageName);
+      const componentName = pageName.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+      const body = pageNodes.map((node) => renderFrameworkNode(node, "vue", "desktop")).join("\n");
+      files[`src/pages/${componentName}.vue`] = `<template>\n  <main ref="containerRef" class="vf-page">\n${body}\n  </main>\n</template>\n\n<script setup lang="ts">\nimport { onMounted, onUnmounted, ref } from "vue";\nimport { gsap } from "gsap";\nimport { ScrollTrigger } from "gsap/ScrollTrigger";\ngsap.registerPlugin(ScrollTrigger);\n\nconst containerRef = ref<HTMLElement | null>(null);\nlet ctx: gsap.Context;\n\nonMounted(() => {\n  ctx = gsap.context(() => {\n    containerRef.value?.querySelectorAll("[data-animation]").forEach((el) => {\n      const preset = el.getAttribute("data-animation");\n      const vars: gsap.TweenVars = { opacity: 0, duration: 0.8, ease: "power3.out" };\n      if (preset === "slide-up") vars.y = 24;\n      if (preset === "scale") vars.scale = 0.92;\n      gsap.from(el, vars);\n    });\n  }, containerRef.value!);\n});\n\nonUnmounted(() => ctx?.revert());\n</script>\n`;
+    });
+
+    const firstPageComp = pages[0]!.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+    files["src/App.vue"] = `<template>\n  <div>\n    <nav style="display: flex; gap: 12px; padding: 16px; background: #17141d; color: #f7f6f2; border-bottom: 1px solid rgba(255,255,255,0.1);">\n      ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `<button :style="{ background: activeTab === '${name}' ? '#a7f0d4' : 'transparent', color: activeTab === '${name}' ? '#121018' : '#f7f6f2', border: 'none', padding: '8px 16px', borderRadius: '99px', cursor: 'pointer', fontWeight: 600 }" @click="activeTab = '${name}'">${p}</button>`; }).join("\n      ")}\n    </nav>\n    ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `<${name} v-if="activeTab === '${name}'" />`; }).join("\n    ")}\n  </div>\n</template>\n\n<script setup lang="ts">\nimport { ref } from "vue";\n${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `import ${name} from "./pages/${name}.vue";`; }).join("\n")}\n\nconst activeTab = ref("${firstPageComp}");\n</script>\n`;
+  } else if (framework === "svelte") {
+    files["package.json"] = JSON.stringify({
+      name: project.name.toLowerCase().replace(/\s+/g, "-"),
+      private: true,
+      version: "1.0.0",
+      type: "module",
+      scripts: { dev: "vite", build: "vite build", preview: "vite preview" },
+      dependencies: { svelte: "^4.2.18", gsap: "^3.12.5" },
+      devDependencies: { "@sveltejs/vite-plugin-svelte": "^3.1.1", typescript: "^5.5.3", vite: "^5.4.1" },
+    }, null, 2);
+    files["vite.config.ts"] = `import { defineConfig } from "vite";\nimport { svelte } from "@sveltejs/vite-plugin-svelte";\nexport default defineConfig({ plugins: [svelte()] });\n`;
+    files["index.html"] = `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>${escapeHtml(project.name)}</title>\n</head>\n<body>\n  <div id="app"></div>\n  <script type="module" src="/src/main.ts"></script>\n</body>\n</html>\n`;
+    files["src/index.css"] = responsiveCss;
+    files["src/main.ts"] = `import App from "./App.svelte";\nimport "./index.css";\nconst app = new App({ target: document.getElementById("app")! });\nexport default app;\n`;
+
+    pages.forEach((pageName) => {
+      const pageNodes = getProjectPageNodes(project, pageName);
+      const componentName = pageName.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+      const body = pageNodes.map((node) => renderFrameworkNode(node, "svelte", "desktop")).join("\n");
+      files[`src/pages/${componentName}.svelte`] = `<script lang="ts">\n  import { onMount } from "svelte";\n  import { gsap } from "gsap";\n  import { ScrollTrigger } from "gsap/ScrollTrigger";\n  gsap.registerPlugin(ScrollTrigger);\n  let containerRef: HTMLElement;\n  onMount(() => {\n    const ctx = gsap.context(() => {\n      containerRef?.querySelectorAll("[data-animation]").forEach((el) => {\n        const preset = el.getAttribute("data-animation");\n        const vars: gsap.TweenVars = { opacity: 0, duration: 0.8, ease: "power3.out" };\n        if (preset === "slide-up") vars.y = 24;\n        if (preset === "scale") vars.scale = 0.92;\n        gsap.from(el, vars);\n      });\n    }, containerRef);\n    return () => ctx.revert();\n  });\n</script>\n\n<main bind:this={containerRef} class="vf-page">\n${body}\n</main>\n`;
+    });
+
+    const firstPageComp = pages[0]!.replace(/[^a-zA-Z0-9]/g, "") || "Page";
+    files["src/App.svelte"] = `<script lang="ts">\n  ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `import ${name} from "./pages/${name}.svelte";`; }).join("\n  ")}\n  let activeTab = "${firstPageComp}";\n</script>\n\n<div>\n  <nav style="display: flex; gap: 12px; padding: 16px; background: #17141d; color: #f7f6f2; border-bottom: 1px solid rgba(255,255,255,0.1);">\n    ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `<button style="background: {activeTab === '${name}' ? '#a7f0d4' : 'transparent'}; color: {activeTab === '${name}' ? '#121018' : '#f7f6f2'}; border: none; padding: 8px 16px; border-radius: 99px; cursor: pointer; font-weight: 600;" on:click={() => activeTab = '${name}'}>${p}</button>`; }).join("\n    ")}\n  </nav>\n  ${pages.map((p) => { const name = p.replace(/[^a-zA-Z0-9]/g, "") || "Page"; return `{#if activeTab === '${name}'}<${name} />{/if}`; }).join("\n  ")}\n</div>\n`;
+  } else {
+    files["styles.css"] = responsiveCss;
+    pages.forEach((pageName, index) => {
+      const pageNodes = getProjectPageNodes(project, pageName);
+      const filename = index === 0 ? "index.html" : `${pageName.toLowerCase().replace(/[^a-z0-9]/g, "-")}.html`;
+      const nodesMarkup = pageNodes.map((node) => renderNode(node, "desktop")).join("\n");
+      const navLinks = pages.map((p, i) => {
+        const href = i === 0 ? "index.html" : `${p.toLowerCase().replace(/[^a-z0-9]/g, "-")}.html`;
+        return `<a href="${href}" style="color:${p === pageName ? "#a7f0d4" : "#f7f6f2"}; text-decoration:none; font-weight:600;">${p}</a>`;
+      }).join(" | ");
+
+      files[filename] = `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width,initial-scale=1" />\n  <title>${escapeHtml(project.name)} - ${escapeHtml(pageName)}</title>\n  <link rel="stylesheet" href="styles.css" />\n  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>\n  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>\n</head>\n<body>\n<header style="padding:16px; background:#17141d; color:#f7f6f2; display:flex; gap:16px;">${navLinks}</header>\n<main class="vf-page" data-breakpoint="desktop">\n${nodesMarkup}\n</main>\n<script>\n  document.addEventListener("DOMContentLoaded", () => {\n    gsap.registerPlugin(ScrollTrigger);\n    document.querySelectorAll("[data-animation]").forEach((el) => {\n      const preset = el.getAttribute("data-animation");\n      const vars = { opacity: 0, duration: 0.8, ease: "power3.out" };\n      if (preset === "slide-up") vars.y = 24;\n      if (preset === "scale") vars.scale = 0.92;\n      gsap.from(el, vars);\n    });\n  });\n</script>\n</body>\n</html>`;
+    });
+  }
+
+  return files;
+}
+
+export async function downloadProjectZip(project: EditorProject, framework: "html" | "vue" | "react" | "svelte"): Promise<Blob> {
+  const zip = new JSZip();
+  const files = generateProjectZipFiles(project, framework);
+  Object.entries(files).forEach(([filepath, content]) => {
+    zip.file(filepath, content);
+  });
+  return await zip.generateAsync({ type: "blob" });
 }
