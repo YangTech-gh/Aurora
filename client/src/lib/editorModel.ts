@@ -729,6 +729,102 @@ export function projectFromImportedFiles(files: Array<{ path: string; size: numb
   return project;
 }
 
+export function updateImportedFileContent(project: EditorProject, targetPath: string, newContent: string): EditorProject {
+  const files = (project.importedFiles ?? []).map((file) => file.path === targetPath ? { ...file, content: newContent, size: newContent.length } : file);
+  const detectedFramework = detectProjectFramework(files);
+  const nextNodes = reconstructImportedNodes(files, detectedFramework);
+  const root = project.nodes[0];
+  const updatedNodes = root && nextNodes.length
+    ? updateNodeTree(project.nodes, root.id, (current) => ({ ...current, children: nextNodes }))
+    : project.nodes;
+  return {
+    ...project,
+    importedFiles: files,
+    detectedFramework,
+    nodes: updatedNodes,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function bundleProjectForLiveDev(project: EditorProject): string {
+  const framework = project.detectedFramework ?? "unknown";
+  const files = project.importedFiles ?? [];
+  const cssFiles = files.filter((f) => f.kind === "style" && f.content).map((f) => f.content).join("\n");
+  const responsiveCss = exportResponsiveCss(project);
+  const combinedCss = `${responsiveCss}\n${cssFiles}`;
+
+  const htmlEntry = files.find((f) => f.path.toLowerCase().endsWith(".html") && f.content);
+  const reactEntry = files.find((f) => (f.path.toLowerCase().endsWith(".jsx") || f.path.toLowerCase().endsWith(".tsx") || f.path.toLowerCase().includes("app")) && f.content);
+  const vueEntry = files.find((f) => f.path.toLowerCase().endsWith(".vue") && f.content);
+
+  if (framework === "react" && reactEntry) {
+    const rawJsx = reactEntry.content || "";
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>${combinedCss}</style>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body style="margin:0; background:#121018; color:#f7f6f2;">
+  <div id="root"></div>
+  <script type="text/babel">
+    ${rawJsx.replace(/import\s+[\s\S]*?from\s+['"][^'"]+['"];?/g, "")}
+
+    if (typeof App !== 'undefined') {
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    } else if (typeof Component !== 'undefined') {
+      ReactDOM.createRoot(document.getElementById('root')).render(<Component />);
+    } else {
+      const Fallback = () => (
+        <main className="vf-page">
+          ${reactEntry.content ? `<h1>Loaded React Entry</h1><pre style={{color:'#a7f0d4'}}>${escapeHtml(reactEntry.path)}</pre>` : `<h1>React Live Mount</h1>`}
+        </main>
+      );
+      ReactDOM.createRoot(document.getElementById('root')).render(<Fallback />);
+    }
+  </script>
+</body>
+</html>`;
+  }
+
+  if (framework === "vue" && vueEntry) {
+    const rawVue = vueEntry.content || "";
+    const templateMatch = rawVue.match(/<template>([\s\S]*?)<\/template>/i)?.[1] || "<div>Vue Mount</div>";
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>${combinedCss}</style>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body style="margin:0; background:#121018; color:#f7f6f2;">
+  <div id="app"></div>
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      template: \`${templateMatch.replace(/`/g, "\\`")}\`
+    }).mount('#app');
+  </script>
+</body>
+</html>`;
+  }
+
+  if (htmlEntry) {
+    return htmlEntry.content?.includes("<html")
+      ? htmlEntry.content
+      : `<!DOCTYPE html><html><head><style>${combinedCss}</style></head><body style="margin:0; background:#121018; color:#f7f6f2;">${htmlEntry.content}</body></html>`;
+  }
+
+  return exportHtmlProject(project);
+}
+
 export function clampMediaTime(value: number, duration = 100) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), Math.max(duration, 0));
