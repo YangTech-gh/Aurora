@@ -69,11 +69,30 @@ const trpcClient = trpc.createClient({
         }
         return {};
       },
-      fetch(input, init) {
-        return globalThis.fetch(input, {
+      async fetch(input, init) {
+        const response = await globalThis.fetch(input, {
           ...(init ?? {}),
           credentials: "include",
         });
+        const contentType = response.headers.get("content-type") || "";
+        if (!response.ok && contentType.includes("text/html")) {
+          // On static hosts like GitHub Pages, /api/trpc/* returns HTML index.html (404/405).
+          // Wrap it in a tRPC error JSON structure so superjson/httpBatchLink doesn't throw SyntaxError ("Unexpected token '<'").
+          const trpcErrorPayload = [
+            {
+              error: {
+                message: `Server returned ${response.status} (${response.statusText || "Static host endpoint unavailable"})`,
+                code: -32603,
+                data: { code: "NOT_FOUND", httpStatus: response.status },
+              },
+            },
+          ];
+          return new Response(JSON.stringify(trpcErrorPayload), {
+            status: response.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return response;
       },
     }),
   ],
