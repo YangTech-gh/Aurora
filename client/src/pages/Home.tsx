@@ -626,18 +626,34 @@ export default function Home() {
     if (!canvasRef.current) return;
     setIsPlaying(true);
     previewContext.current?.revert();
-    const targets = Array.from(canvasRef.current.querySelectorAll<HTMLElement>("[data-visual-node]"));
+    const allTargets = Array.from(canvasRef.current.querySelectorAll<HTMLElement>("[data-visual-node]"));
+
+    // Ensure selected node has an active animation preset if user hits preview
+    if (selectedNode && (!selectedNode.animation?.enabled || selectedNode.animation?.preset === "none")) {
+      updateNode(selectedNode.id, (node) => ({
+        ...node,
+        animation: { ...node.animation, enabled: true, preset: "slide-up", duration: 0.8, ease: "power3.out" },
+      }));
+    }
+
     previewContext.current = gsap.context(() => {
       const timeline = gsap.timeline({ onComplete: () => setIsPlaying(false) });
-      targets.forEach((target) => {
+      let animatedCount = 0;
+
+      allTargets.forEach((target) => {
         const nodeId = target.dataset.visualNode;
         if (!nodeId) return;
         const node = findNode(project.nodes, nodeId);
-        if (!node || !node.animation || !node.animation.enabled || node.animation.preset === "none") return;
-        const anim = node.animation;
+        if (!node) return;
+
+        const isTargeted = selectedId === nodeId || (node.animation?.enabled && node.animation.preset !== "none");
+        if (!isTargeted) return;
+
+        const anim = node.animation?.preset && node.animation.preset !== "none" ? node.animation : { enabled: true, preset: "slide-up", duration: 0.8, delay: 0, ease: "power3.out", repeat: 0, yoyo: false };
         const fromVars: gsap.TweenVars = { opacity: 0 };
-        if (anim.preset === "slide-up") fromVars.y = 28;
-        if (anim.preset === "scale") fromVars.scale = 0.88;
+        if (anim.preset === "slide-up") fromVars.y = 36;
+        if (anim.preset === "scale") fromVars.scale = 0.85;
+        if (anim.preset === "fade") fromVars.opacity = 0;
 
         const toVars: gsap.TweenVars = {
           x: 0,
@@ -649,10 +665,18 @@ export default function Home() {
           ease: anim.ease ?? "power3.out",
           repeat: anim.repeat ?? 0,
           yoyo: Boolean(anim.yoyo),
+          clearProps: "transform,opacity",
         };
+
         timeline.fromTo(target, fromVars, toVars, 0);
+        animatedCount += 1;
       });
+
+      if (animatedCount === 0 && allTargets.length > 0) {
+        timeline.fromTo(allTargets[0], { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out", clearProps: "transform,opacity" }, 0);
+      }
     }, canvasRef.current);
+
     toast.success("GSAP 3.15 animation context previewed");
   }
 
