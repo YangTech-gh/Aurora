@@ -267,7 +267,7 @@ describe("editor model", () => {
     expect(htmlZip["styles.css"]).toContain(".vf-page");
   });
 
-  it("exports the same model to HTML, CSS and framework representations", () => {
+  it("exports the same model to HTML, CSS and framework representations with 100% vh/vw reset styling", () => {
     const html = exportHtml(starterProject);
     const css = exportCss();
     const vue = exportFramework(starterProject, "vue");
@@ -275,7 +275,8 @@ describe("editor model", () => {
     const svelte = exportFramework(starterProject, "svelte");
 
     expect(html).toContain("data-node-id=\"hero-section\"");
-    expect(css).toContain("@media (max-width: 720px)");
+    expect(css).toContain("width: 100vw");
+    expect(css).toContain("min-height: 100vh");
     expect(vue).toContain("<template>");
     expect(vue).toContain("class=\"vf-heading\"");
     expect(vue).toContain(":style=\"{ position:");

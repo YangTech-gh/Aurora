@@ -76,6 +76,9 @@ import {
   toggleMediaPlayback,
   switchProjectPage,
 } from "@/lib/editorModel";
+import { saveImageToIDB, getAllImagesFromIDB } from "@/lib/idbStorage";
+import type { StoredImage } from "@/lib/idbStorage";
+import { ColorWheelPicker } from "@/components/ColorWheelPicker";
 import type { Breakpoint, ComponentKind, EditorNode, EditorProject, NodeStyle } from "@/lib/editorModel";
 import { trpc } from "@/lib/trpc";
 
@@ -256,9 +259,24 @@ export default function Home() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
   const [liveDevMode, setLiveDevMode] = useState<boolean>(false);
+
+  // Image Switcher modal state
+  const [showImageSwitcher, setShowImageSwitcher] = useState(false);
+  const [targetImageNodeId, setTargetImageNodeId] = useState<string | null>(null);
+  const [idbImages, setIdbImages] = useState<StoredImage[]>([]);
+  const [customImageUrlInput, setCustomImageUrlInput] = useState("");
+
+  // Canvas background modal state
+  const [showBackgroundPopup, setShowBackgroundPopup] = useState(false);
+  const [bgType, setBgType] = useState<"solid" | "gradient" | "image">("solid");
+  const [bgValue, setBgValue] = useState("linear-gradient(135deg, #1b1728 0%, #342a56 54%, #193b3c 100%)");
+  const [bgImageUrl, setBgImageUrl] = useState("");
+
   const canvasRef = useRef<HTMLDivElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const assetInputRef = useRef<HTMLInputElement>(null);
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
+  const bgImageInputRef = useRef<HTMLInputElement>(null);
   const mediaRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const previewContext = useRef<gsap.Context | null>(null);
   const githubImport = trpc.projects.importGithub.useMutation();
@@ -504,6 +522,86 @@ export default function Home() {
     toast.success(`Updated ${activeFilePath.split("/").pop()} & synced to canvas`);
   }
 
+  async function openImageSwitcher(nodeId: string) {
+    setTargetImageNodeId(nodeId);
+    try {
+      const stored = await getAllImagesFromIDB();
+      setIdbImages(stored);
+    } catch {
+      setIdbImages([]);
+    }
+    setShowImageSwitcher(true);
+  }
+
+  function handleSwitchImageSelect(url: string, fileName = "switched-image") {
+    if (!targetImageNodeId) return;
+    updateNode(targetImageNodeId, (node) => ({
+      ...node,
+      asset: { ...node.asset, url, fileName },
+    }));
+    setShowImageSwitcher(false);
+    toast.success("Image source switched successfully");
+  }
+
+  async function handleModalFileUpload(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      await saveImageToIDB(file.name, dataUrl);
+      handleSwitchImageSelect(dataUrl, file.name);
+    } catch {
+      toast.error("Failed to read image file");
+    }
+  }
+
+  async function handleBgFileUpload(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      await saveImageToIDB(file.name, dataUrl);
+      setBgImageUrl(dataUrl);
+      toast.success("Background image uploaded");
+    } catch {
+      toast.error("Failed to upload background image");
+    }
+  }
+
+  function applyCanvasBackgroundSetup() {
+    const rootNode = project.nodes[0];
+    if (!rootNode) return;
+
+    let backgroundStyle = bgValue;
+    if (bgType === "image" && bgImageUrl) {
+      backgroundStyle = `url("${bgImageUrl}") center/cover no-repeat`;
+    }
+
+    updateNode(rootNode.id, (node) => ({
+      ...node,
+      styles: {
+        ...node.styles,
+        [breakpoint]: {
+          ...node.styles[breakpoint],
+          background: backgroundStyle,
+        },
+      },
+    }));
+
+    setShowBackgroundPopup(false);
+    toast.success("Canvas background setup updated");
+  }
+
   function assignAssetToSelected(assetUrl: string) {
     if (!selectedNode) return;
     const asset = assetLibrary.find((item) => item.url === assetUrl);
@@ -747,6 +845,12 @@ export default function Home() {
       style: styleObject,
       onPointerDown: (event: ReactPointerEvent<HTMLElement>) => startDrag(event, node.id),
       onClick: (event: React.MouseEvent<HTMLElement>) => { event.stopPropagation(); setSelectedId(node.id); },
+      onDoubleClick: (event: React.MouseEvent<HTMLElement>) => {
+        event.stopPropagation();
+        if (node.kind === "image" || node.kind === "carousel") {
+          openImageSwitcher(node.id);
+        }
+      },
     };
 
     const children = node.children?.map((child) => <Fragment key={child.id}>{renderCanvasNode(child)}</Fragment>) ?? [];
@@ -898,7 +1002,7 @@ export default function Home() {
             </div>
             <div className="workspace-tools"><label className="viewport-size-control" title={`Edit ${breakpointLabels[breakpoint].label} viewport width`}><span>W</span><input type="number" min="240" max="1800" step="1" value={canvasWidth} onChange={(event) => updateBreakpointWidth(Number(event.target.value))} /><em>px</em></label><select className="orientation-control" value={breakpointOrientations[breakpoint]} onChange={(event) => updateBreakpointOrientation(event.target.value as "portrait" | "landscape")} aria-label="Viewport orientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select><span className={`override-badge ${hasActiveOverride ? "active" : ""}`}>{hasActiveOverride ? "Override" : "Inherited"}</span><button className={`mode-toggle ${liveDevMode ? "active" : ""}`} title="Toggle pnpm dev Live Mount Preview" onClick={() => setLiveDevMode(!liveDevMode)}><Play size={13} fill="currentColor" /> pnpm dev Mount</button><button className="tool-button active"><MousePointer2 size={15} /></button><button className="tool-button"><Move size={15} /></button><span className="toolbar-divider" /><button className="tool-button" onClick={() => setZoom((value) => Math.max(40, value - 10))}><ArrowLeft size={14} /></button><span className="zoom-value">{zoom}%</span><button className="tool-button" onClick={() => setZoom((value) => Math.min(110, value + 10))}><ArrowRight size={14} /></button></div>
           </div>}
-          <div className="canvas-stage" onClick={() => setSelectedId("")}>
+          <div className="canvas-stage" onClick={() => setSelectedId("")} onDoubleClick={() => setShowBackgroundPopup(true)}>
             <div className="canvas-stage-label top-label"><span className="live-dot" /> {liveDevMode ? "PNPM DEV LIVE MOUNT" : "LIVE CANVAS"} <span className="stage-divider" /> {breakpointLabels[breakpoint].label.toUpperCase()} / {canvasWidth}px</div>
             <div className="canvas-viewport" onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
               {liveDevMode ? (
@@ -939,7 +1043,14 @@ export default function Home() {
               <section className="inspector-section"><div className="section-title"><span>Layout</span><button><Link2 size={12} /></button></div><div className="field-grid"><Field label="X" value={selectedStyle.x} suffix="px" onChange={(value) => updateSelectedStyle({ x: value }, true)} /><Field label="Y" value={selectedStyle.y} suffix="px" onChange={(value) => updateSelectedStyle({ y: value }, true)} /><Field label="W" value={selectedStyle.width} suffix="px" onChange={(value) => updateSelectedStyle({ width: value }, true)} /><Field label="H" value={selectedStyle.height} suffix="px" onChange={(value) => updateSelectedStyle({ height: value }, true)} /></div></section>
               <section className="inspector-section"><div className="section-title"><span>Spacing</span><button className="unit-label">PX</button></div><div className="field-grid"><Field label="Padding" value={selectedStyle.padding} suffix="px" onChange={(value) => updateSelectedStyle({ padding: value })} /><Field label="Radius" value={selectedStyle.radius} suffix="px" onChange={(value) => updateSelectedStyle({ radius: value })} /></div></section>
               {(selectedNode.kind === "heading" || selectedNode.kind === "paragraph" || selectedNode.kind === "button") && <section className="inspector-section"><div className="section-title"><span>Typography</span><button className="unit-label">REM</button></div><div className="field-grid"><Field label="Size" value={selectedStyle.fontSize} suffix="px" onChange={(value) => updateSelectedStyle({ fontSize: value })} /><Field label="Weight" value={selectedStyle.fontWeight} suffix="" onChange={(value) => updateSelectedStyle({ fontWeight: value })} /><Field label="Leading" value={selectedStyle.lineHeight} suffix="" step={0.05} onChange={(value) => updateSelectedStyle({ lineHeight: value })} /><Field label="Tracking" value={selectedStyle.letterSpacing} suffix="px" step={0.1} onChange={(value) => updateSelectedStyle({ letterSpacing: value })} /></div></section>}
-              <section className="inspector-section"><div className="section-title"><span>Color & fill</span><button><MoreHorizontal size={13} /></button></div><div className="color-caption">Background</div><div className="color-field"><span className="color-swatch" style={{ background: selectedStyle.background }} /><input value={selectedStyle.background} onChange={(event) => updateSelectedStyle({ background: event.target.value })} /><span className="hex-mark">⌘</span></div><div className="color-caption">Text color</div><div className="color-field"><span className="color-swatch" style={{ background: selectedStyle.color }} /><input value={selectedStyle.color} onChange={(event) => updateSelectedStyle({ color: event.target.value })} /><span className="hex-mark">⌘</span></div><div className="opacity-row"><span>Opacity</span><input type="range" min="0" max="1" step="0.01" value={selectedStyle.opacity} onChange={(event) => updateSelectedStyle({ opacity: Number(event.target.value) })} /><span>{Math.round(selectedStyle.opacity * 100)}%</span></div></section>
+              <section className="inspector-section">
+                <div className="section-title"><span>Color & fill</span><button><MoreHorizontal size={13} /></button></div>
+                <div className="color-caption">Background Color / Gradient Wheel</div>
+                <ColorWheelPicker value={selectedStyle.background} onChange={(val) => updateSelectedStyle({ background: val })} />
+                <div className="color-caption" style={{ marginTop: "12px" }}>Text color</div>
+                <div className="color-field"><span className="color-swatch" style={{ background: selectedStyle.color }} /><input value={selectedStyle.color} onChange={(event) => updateSelectedStyle({ color: event.target.value })} /><span className="hex-mark">⌘</span></div>
+                <div className="opacity-row"><span>Opacity</span><input type="range" min="0" max="1" step="0.01" value={selectedStyle.opacity} onChange={(event) => updateSelectedStyle({ opacity: Number(event.target.value) })} /><span>{Math.round(selectedStyle.opacity * 100)}%</span></div>
+              </section>
               <section className="inspector-section"><div className="section-title"><span>Layout behavior</span><button><MoreHorizontal size={13} /></button></div><div className="select-field"><span>Display</span><select value={selectedStyle.display} onChange={(event) => updateSelectedStyle({ display: event.target.value as NodeStyle["display"] })}><option value="block">Block</option><option value="flex">Flex</option><option value="grid">Grid</option></select></div><div className="alignment-row"><button className={selectedStyle.justifyContent === "start" ? "active" : ""} onClick={() => updateSelectedStyle({ justifyContent: "start" })}><AlignLeft size={14} /></button><button className={selectedStyle.justifyContent === "center" ? "active" : ""} onClick={() => updateSelectedStyle({ justifyContent: "center" })}><AlignCenter size={14} /></button><button className={selectedStyle.justifyContent === "space-between" ? "active" : ""} onClick={() => updateSelectedStyle({ justifyContent: "space-between" })}><AlignJustify size={14} /></button></div></section><section className="inspector-section"><div className="section-title"><span>Effects & borders</span><button><Sparkles size={13} /></button></div><div className="field-grid"><Field label="Border" value={selectedStyle.borderWidth} suffix="px" onChange={(value) => updateSelectedStyle({ borderWidth: value })} /><Field label="Rotate" value={selectedStyle.rotation} suffix="deg" onChange={(value) => updateSelectedStyle({ rotation: value })} /></div><div className="color-field compact-color"><span className="color-swatch" style={{ background: selectedStyle.borderColor }} /><input value={selectedStyle.borderColor} onChange={(event) => updateSelectedStyle({ borderColor: event.target.value })} /><span className="hex-mark">border</span></div><div className="select-field effect-select"><span>Shadow</span><select value={selectedStyle.shadow} onChange={(event) => updateSelectedStyle({ shadow: event.target.value })}><option value="none">None</option><option value="0 16px 40px rgba(0,0,0,.22)">Soft</option><option value="0 22px 60px rgba(0,0,0,.34)">Deep</option></select></div></section>{selectedNode.kind === "carousel" && <section className="inspector-section"><div className="section-title"><span>Carousel settings</span><span className="unit-label">SLIDES</span></div><div className="field-grid"><Field label="Slides" value={selectedNode.carousel?.slides ?? 4} suffix="" onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, carousel: { ...(node.carousel ?? { slides: 4, autoplay: true, interval: 4, gap: 16 }), slides: Math.max(1, Math.round(value)) } }))} /><Field label="Gap" value={selectedNode.carousel?.gap ?? 16} suffix="px" onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, carousel: { ...(node.carousel ?? { slides: 4, autoplay: true, interval: 4, gap: 16 }), gap: Math.max(0, value) } }))} /></div><div className="select-field"><span>Autoplay</span><select value={String(selectedNode.carousel?.autoplay ?? true)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, carousel: { ...(node.carousel ?? { slides: 4, autoplay: true, interval: 4, gap: 16 }), autoplay: event.target.value === "true" } }))}><option value="true">Enabled</option><option value="false">Disabled</option></select></div></section>}{selectedNode.kind === "form" && <section className="inspector-section"><div className="section-title"><span>Form fields</span><span className="unit-label">{selectedNode.form?.fields.length ?? 0} FIELDS</span></div>{(selectedNode.form?.fields ?? []).map((field, index) => <div className="form-field-row" key={field.id}><input value={field.label} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, form: { fields: (node.form?.fields ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) } }))} /><select value={field.type} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, form: { fields: (node.form?.fields ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, type: event.target.value as "text" | "email" | "textarea" | "select" } : item) } }))}><option value="text">Text</option><option value="email">Email</option><option value="textarea">Textarea</option><option value="select">Select</option></select><button className={field.required ? "active" : ""} onClick={() => updateNode(selectedNode.id, (node) => ({ ...node, form: { fields: (node.form?.fields ?? []).map((item, itemIndex) => itemIndex === index ? { ...item, required: !item.required } : item) } }))}>Req</button></div>)}</section>}{selectedNode.kind === "grid" && <section className="inspector-section"><div className="section-title"><span>Grid settings</span><span className="unit-label">ADAPTIVE</span></div><div className="field-grid"><Field label="Columns" value={selectedNode.grid?.columns ?? 2} suffix="" onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, grid: { ...(node.grid ?? { columns: 2, gap: 12 }), columns: Math.min(6, Math.max(1, Math.round(value))) } }))} /><Field label="Gap" value={selectedNode.grid?.gap ?? 12} suffix="px" onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, grid: { ...(node.grid ?? { columns: 2, gap: 12 }), gap: Math.max(0, value) } }))} /></div></section>}{selectedNode.kind === "navbar" && <section className="inspector-section"><div className="section-title"><span>Navigation</span><span className="unit-label">LINKS</span></div><div className="color-field compact-color"><input value={(selectedNode.navbar?.links ?? ["Work", "About", "Contact"]).join(", ")} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, navbar: { ...(node.navbar ?? { links: ["Work", "About", "Contact"], sticky: false }), links: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) } }))} /><span className="hex-mark">comma</span></div><div className="select-field"><span>Sticky</span><select value={String(selectedNode.navbar?.sticky ?? false)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, navbar: { ...(node.navbar ?? { links: ["Work", "About", "Contact"], sticky: false }), sticky: event.target.value === "true" } }))}><option value="false">Normal</option><option value="true">Sticky</option></select></div></section>}{selectedNode.kind === "card" && <section className="inspector-section"><div className="section-title"><span>Card variant</span><span className="unit-label">SURFACE</span></div><div className="select-field"><span>Style</span><select value={selectedNode.card?.variant ?? "glass"} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, card: { variant: event.target.value as "glass" | "solid" | "outline" } }))}><option value="glass">Glass</option><option value="solid">Solid</option><option value="outline">Outline</option></select></div></section>}{(selectedNode.kind === "video" || selectedNode.kind === "scrub-video") && <section className="inspector-section"><div className="section-title"><span>Video behavior</span><span className="unit-label">MEDIA</span></div><div className="field-grid"><Field label="Duration" value={selectedNode.video?.duration ?? 30} suffix="s" step={0.5} onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, video: { ...(node.video ?? {}), duration: Math.max(0.1, value) } }))} /><label className="field"><span>Poster URL</span><span className="field-input"><input value={selectedNode.video?.poster ?? ""} placeholder="Optional image URL" onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, video: { ...(node.video ?? {}), poster: event.target.value } }))} /></span></label></div><div className="select-field"><span>Playback</span><select value={`${selectedNode.video?.autoplay ? "auto" : "manual"}-${selectedNode.video?.loop === false ? "once" : "loop"}`} onChange={(event) => { const [autoplay, loop] = event.target.value.split("-"); updateNode(selectedNode.id, (node) => ({ ...node, video: { ...(node.video ?? {}), autoplay: autoplay === "auto", loop: loop !== "once" } })); }}><option value="manual-loop">Manual / loop</option><option value="auto-loop">Autoplay / loop</option><option value="manual-once">Manual / once</option></select></div><div className="select-field"><span>Audio</span><select value={String(selectedNode.video?.muted ?? true)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, video: { ...(node.video ?? {}), muted: event.target.value === "true" } }))}><option value="true">Muted</option><option value="false">Sound on</option></select></div></section>}{(selectedNode.kind === "video" || selectedNode.kind === "scrub-video") && <section className="inspector-section"><div className="section-title"><span>Media timeline</span><span className="unit-label">SEC</span></div><div className="video-inspector"><strong>{selectedNode.kind === "scrub-video" ? "Scrub interaction" : "Playback"}</strong><button className="media-play" type="button" onClick={() => toggleMedia(selectedNode.id)}>{mediaPlaying[selectedNode.id] ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}</button><input type="range" min="0" max={selectedNode.video?.duration ?? 100} step="0.1" value={selectedVideoTime} onChange={(event) => setMediaTime(selectedNode.id, Number(event.target.value))} /><div><span>{selectedVideoTime.toFixed(1)}s</span><span>{(selectedNode.video?.duration ?? 100).toFixed(1)}s</span></div></div></section>}
             </div>}
             {inspectorTab === "motion" && <div className="motion-panel"><div className="motion-hero"><div className="motion-icon"><Wand2 size={17} /></div><div><strong>Animate this layer</strong><span>GSAP 3.15 · {(project.detectedFramework ?? "unknown").toUpperCase()} API</span></div><button className={`switch ${selectedNode.animation.enabled ? "on" : ""}`} onClick={() => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, enabled: !node.animation.enabled } }))}><i /></button></div><div className="motion-section-title">Preset <span>4 available</span></div><div className="motion-presets">{(["fade", "slide-up", "scale", "none"] as const).map((preset) => <button key={preset} className={selectedNode.animation.preset === preset ? "active" : ""} onClick={() => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, preset, enabled: preset !== "none" } }))}><span className={`preset-icon preset-${preset}`} />{preset === "slide-up" ? "Slide up" : preset[0].toUpperCase() + preset.slice(1)}</button>)}</div><div className="motion-fields"><Field label="Duration" value={selectedNode.animation.duration} suffix="s" step={0.05} onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, duration: value } }))} /><Field label="Delay" value={selectedNode.animation.delay} suffix="s" step={0.05} onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, delay: value } }))} /></div><div className="select-field"><span>Ease</span><select value={selectedNode.animation.ease} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, ease: event.target.value } }))}><option value="power3.out">Power 3 / Out</option><option value="power2.out">Power 2 / Out</option><option value="back.out(1.7)">Back / Out</option><option value="elastic.out(1, 0.4)">Elastic / Out</option></select></div><div className="select-field"><span>Lifecycle</span><select value={selectedNode.animation.lifecycle ?? "onMount"} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, lifecycle: event.target.value as "onMount" | "onEnter" | "onScroll" } }))}><option value="onMount">onMount / mount</option><option value="onEnter">onEnter / view</option><option value="onScroll">onScroll / scrub</option></select></div><div className="motion-fields"><Field label="Repeat" value={selectedNode.animation.repeat ?? 0} suffix="x" onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, repeat: Math.max(0, Math.round(value)) } }))} /><Field label="Stagger" value={selectedNode.animation.stagger ?? 0} suffix="s" step={0.05} onChange={(value) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, stagger: Math.max(0, value) } }))} /></div><div className="select-field"><span>Ease reverse</span><select value={typeof selectedNode.animation.easeReverse === "string" ? selectedNode.animation.easeReverse : ""} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, easeReverse: event.target.value || true } }))}><option value="power2.inOut">Power 2 / In Out</option><option value="sine.in">Sine / In</option><option value="expo.in">Expo / In</option></select></div><div className="motion-toggle-row"><span>Yoyo</span><button className={`switch ${selectedNode.animation.yoyo ? "on" : ""}`} onClick={() => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, yoyo: !node.animation.yoyo } }))}><i /></button><span>Markers</span><button className={`switch ${selectedNode.animation.markers ? "on" : ""}`} onClick={() => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, markers: !node.animation.markers } }))}><i /></button></div>{selectedNode.animation.lifecycle === "onScroll" && <><div className="motion-fields"><label className="field"><span>Scrub</span><span className="field-input"><select value={String(selectedNode.animation.scrub ?? false)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, scrub: event.target.value === "true" ? true : event.target.value === "false" ? false : Number(event.target.value) } }))}><option value="false">Off</option><option value="true">On</option><option value="0.5">0.5s</option><option value="1">1s</option></select></span></label><label className="field"><span>Snap</span><span className="field-input"><select value={String(selectedNode.animation.snap ?? 1)} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, snap: event.target.value === "labels" ? "labels" : Number(event.target.value) } }))}><option value="1">1</option><option value="0.5">0.5</option><option value="labels">Labels</option></select></span></label></div><div className="motion-fields"><label className="field"><span>Start</span><span className="field-input"><input value={selectedNode.animation.start ?? "top 85%"} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, start: event.target.value } }))} /></span></label><label className="field"><span>End</span><span className="field-input"><input value={selectedNode.animation.end ?? "bottom 20%"} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, end: event.target.value } }))} /></span></label></div><div className="select-field"><span>Toggle actions</span><select value={selectedNode.animation.toggleActions ?? "play none none reverse"} onChange={(event) => updateNode(selectedNode.id, (node) => ({ ...node, animation: { ...node.animation, toggleActions: event.target.value } }))}><option value="play none none reverse">Play / reverse</option><option value="play pause resume reset">Pause / resume</option><option value="restart none none none">Restart once</option></select></div></>}<div className="plugin-shelf"><div><Zap size={13} /><strong>Plugin shelf</strong><span>API-aware</span></div>{gsapPlugins.map((plugin) => <button key={plugin} className={selectedNode.animation.plugins?.includes(plugin) ? "active" : ""} onClick={() => updateNode(selectedNode.id, (node) => { const plugins = node.animation.plugins ?? []; return { ...node, animation: { ...node.animation, plugins: plugins.includes(plugin) ? plugins.filter((item) => item !== plugin) : [...plugins, plugin] } }; })}>{plugin}</button>)}</div><button className="preview-motion" onClick={playAnimation}><Play size={14} fill="currentColor" /> {isPlaying ? "Playing timeline…" : "Preview timeline"}</button></div>}
@@ -953,6 +1064,133 @@ export default function Home() {
       {showImport && <div className="code-overlay" onClick={() => setShowImport(false)}><section className="import-drawer" onClick={(event) => event.stopPropagation()}><div className="code-header"><div><p className="eyebrow-small">INGEST</p><h2>Import a project</h2><span>Bring a visual system into the canvas.</span></div><button className="close-button" onClick={() => setShowImport(false)}><X size={17} /></button></div><div className="import-options"><button className="import-option" onClick={() => folderInputRef.current?.click()}><FolderOpen size={18} /><strong>Local folder</strong><span>Read source, style and asset files from a directory.</span></button><div className="import-divider"><span>or</span></div><div className="github-import"><label>Public GitHub repository</label><div className="github-row"><input value={githubUrl} onChange={(event) => setGithubUrl(event.target.value)} placeholder="https://github.com/owner/repository" /><button className="button-primary" onClick={importGithubProject} disabled={importing}>{importing ? "Reading…" : "Import"}</button></div><small>Framework detection supports HTML, Vue, React and Svelte. Only a bounded file manifest is fetched.</small></div></div><div className="import-footer"><span className="status-pip green" />{project.origin ? `Current source: ${project.origin} · ${project.detectedFramework ?? "unknown"}` : "No source imported yet"}</div></section></div>}
 
       {showCode && <div className="code-overlay" onClick={() => setShowCode(false)}><section className="code-drawer" onClick={(event) => event.stopPropagation()}><div className="code-header"><div><p className="eyebrow-small">EXPORT</p><h2>Code output</h2><span>Generated from your visual model · source {(project.detectedFramework ?? "unknown").toUpperCase()}</span></div><button className="close-button" onClick={() => setShowCode(false)}><X size={17} /></button></div><div className="code-tabs">{(["html", "css", "vue", "react", "svelte", "gsap"] as CodeTab[]).map((tab) => <button key={tab} className={codeTab === tab ? "active" : ""} onClick={() => setCodeTab(tab)}>{tab === "html" ? "HTML" : tab === "css" ? "CSS" : tab[0].toUpperCase() + tab.slice(1)}</button>)}</div><div className="code-meta"><span><FileCode2 size={14} /> {codeTab === "html" ? "index.html" : codeTab === "css" ? "styles.css" : `GeneratedPage.${codeTab === "react" ? "tsx" : codeTab}`}</span><span className="code-actions"><button onClick={copyCode}><Copy size={14} /> Copy</button><button onClick={downloadCode}><Download size={14} /> Download</button><button onClick={downloadZipExport} style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 10px", background: "#4f46e5", color: "#fff", border: "none", borderRadius: "6px", fontSize: "12px", cursor: "pointer", fontWeight: 500 }}><ArrowDownToLine size={14} /> Export ZIP Project</button></span></div><pre className="code-content"><code>{currentCode}</code></pre><div className="code-footer"><span><span className="status-pip green" /> Output follows {breakpointLabels[breakpoint].label} styles</span><button onClick={() => { setShowCode(false); setInspectorTab("motion"); }}>Configure animations <ArrowRight size={14} /></button></div></section></div>}
+
+      {showBackgroundPopup && (
+        <div className="code-overlay" onClick={() => setShowBackgroundPopup(false)}>
+          <section className="import-drawer" style={{ maxWidth: "540px" }} onClick={(e) => e.stopPropagation()}>
+            <div className="code-header">
+              <div>
+                <p className="eyebrow-small">BACKGROUND SETUP</p>
+                <h2>Add Image / Gradient / Solid-Color to Background</h2>
+                <span>Customize canvas background styling and overlays.</span>
+              </div>
+              <button className="close-button" onClick={() => setShowBackgroundPopup(false)}><X size={17} /></button>
+            </div>
+            <input ref={bgImageInputRef} className="visually-hidden" type="file" accept="image/*" onChange={(e) => handleBgFileUpload(e.target.files)} />
+
+            <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ display: "flex", gap: "6px", background: "rgba(255,255,255,0.06)", padding: "3px", borderRadius: "6px" }}>
+                {(["solid", "gradient", "image"] as const).map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    style={{
+                      flex: 1,
+                      padding: "6px",
+                      fontSize: "11px",
+                      borderRadius: "5px",
+                      border: "none",
+                      background: bgType === type ? "#a7f0d4" : "transparent",
+                      color: bgType === type ? "#151218" : "#d6d1df",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                    onClick={() => setBgType(type)}
+                  >
+                    {type === "solid" ? "Solid / Palette" : type === "gradient" ? "Complex Gradient" : "Background Image"}
+                  </button>
+                ))}
+              </div>
+
+              {bgType !== "image" ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={{ fontSize: "11px", color: "#d6d1df", fontWeight: 600 }}>Dynamic Color Palette Wheel</label>
+                  <ColorWheelPicker value={bgValue} onChange={(val) => setBgValue(val)} />
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  <button className="button-primary" onClick={() => bgImageInputRef.current?.click()}>
+                    <Upload size={14} /> Upload Background Image
+                  </button>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <label style={{ fontSize: "11px", color: "#9ce8cd", fontWeight: 600 }}>Or Image URL</label>
+                    <input
+                      type="text"
+                      placeholder="https://..."
+                      value={bgImageUrl}
+                      onChange={(e) => setBgImageUrl(e.target.value)}
+                      style={{ padding: "8px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.15)", background: "#151218", color: "#fff", fontSize: "12px" }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                <button className="button-outline" onClick={() => setShowBackgroundPopup(false)}>Cancel</button>
+                <button className="button-primary" onClick={applyCanvasBackgroundSetup}>Apply Background Setup</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showImageSwitcher && (
+        <div className="code-overlay" onClick={() => setShowImageSwitcher(false)}>
+          <section className="import-drawer" style={{ maxWidth: "520px" }} onClick={(e) => e.stopPropagation()}>
+            <div className="code-header">
+              <div>
+                <p className="eyebrow-small">IMAGE SWITCHER</p>
+                <h2>Switch Component Image</h2>
+                <span>Select or upload an image to embed in your visual component.</span>
+              </div>
+              <button className="close-button" onClick={() => setShowImageSwitcher(false)}><X size={17} /></button>
+            </div>
+            <input ref={modalFileInputRef} className="visually-hidden" type="file" accept="image/*" onChange={(e) => handleModalFileUpload(e.target.files)} />
+
+            <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button className="button-primary" style={{ flex: 1 }} onClick={() => modalFileInputRef.current?.click()}>
+                  <Upload size={14} /> Local File Upload
+                </button>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "11px", color: "#9ce8cd", fontWeight: 600 }}>Or enter Image URL</label>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <input
+                    type="text"
+                    placeholder="https://images.unsplash.com/..."
+                    value={customImageUrlInput}
+                    onChange={(e) => setCustomImageUrlInput(e.target.value)}
+                    style={{ flex: 1, padding: "8px 12px", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.15)", background: "#151218", color: "#fff", fontSize: "12px" }}
+                  />
+                  <button className="button-outline" onClick={() => handleSwitchImageSelect(customImageUrlInput, "custom-url-image")} disabled={!customImageUrlInput.trim()}>
+                    Apply
+                  </button>
+                </div>
+              </div>
+
+              {idbImages.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <label style={{ fontSize: "11px", color: "#d6d1df", fontWeight: 600 }}>Stored Images (IndexedDB browser storage)</label>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", maxHeight: "180px", overflowY: "auto" }}>
+                    {idbImages.map((img) => (
+                      <div
+                        key={img.id}
+                        onClick={() => handleSwitchImageSelect(img.dataUrl, img.name)}
+                        style={{ border: "1px solid rgba(255,255,255,0.15)", borderRadius: "8px", overflow: "hidden", cursor: "pointer", background: "#1a1622", textAlign: "center" }}
+                      >
+                        <img src={img.dataUrl} alt={img.name} style={{ width: "100%", height: "70px", objectFit: "cover" }} />
+                        <span style={{ fontSize: "9px", color: "#a9a2b2", display: "block", padding: "4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{img.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
